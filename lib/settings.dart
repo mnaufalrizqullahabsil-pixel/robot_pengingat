@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 int totalBytes = 1;
 int usedBytes = 0;
@@ -16,66 +18,80 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  final TextEditingController ipController =
-      TextEditingController(text: "192.168.43.100");
-
-  final TextEditingController portController =
-      TextEditingController(text: "12345");
-
+  final TextEditingController ipController = TextEditingController(text: "192.168.43.100");
+  final TextEditingController portController = TextEditingController(text: "80");
   final TextEditingController messageController = TextEditingController();
 
-  Socket? socket;
-  String status = "Disconnected";
+  String status = "Ready";
+  bool isLoading = false;
 
-  Future<void> connect() async {
+  String get baseUrl => "http://${ipController.text.trim()}:${portController.text.trim()}";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedSettings();
+  }
+
+  // Memuat IP dan Port yang tersimpan sebelumnya
+  Future<void> _loadSavedSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      ipController.text = prefs.getString('esp_ip') ?? "192.168.43.100";
+      portController.text = prefs.getString('esp_port') ?? "80";
+    });
+    // Otomatis cek storage saat halaman pertama kali dibuka
+    fetchStorageInfo();
+  }
+
+  // Menyimpan IP dan Port ke local storage HP
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('esp_ip', ipController.text.trim());
+    await prefs.setString('esp_port', portController.text.trim());
+  }
+
+  // 1. Cek Koneksi & Kapasitas LittleFS ESP8266
+  Future<void> fetchStorageInfo() async {
+    await _saveSettings();
+
+    setState(() {
+      status = "Menghubungkan ke ESP...";
+      isLoading = true;
+    });
+
     try {
-      socket = await Socket.connect(
-        ipController.text,
-        int.parse(portController.text),
-        timeout: const Duration(seconds: 5),
-      );
+      final response = await http
+          .get(Uri.parse("$baseUrl/storage"))
+          .timeout(const Duration(seconds: 4));
 
-      setState(() {
-        status = "Connected";
-      });
-
-      socket!.listen(
-        (data) {
-          String message = String.fromCharCodes(data);
-
-          print(message);
-
-          if (message.startsWith("STORAGE|")) {
-            final parts = message.split('|');
-
-            setState(() {
-              totalBytes = int.parse(parts[1]);
-              usedBytes = int.parse(parts[2]);
-            });
-          }
-        },
-        onDone: () {
+      if (response.statusCode == 200) {
+        final message = response.body.trim();
+        if (message.startsWith("STORAGE|")) {
+          final parts = message.split('|');
           setState(() {
-            status = "Disconnected";
+            totalBytes = int.parse(parts[1]);
+            usedBytes = int.parse(parts[2]);
+            status = "Terhubung ke ESP8266";
           });
-        },
-      );
+        }
+      } else {
+        setState(() => status = "Respon ESP: Status ${response.statusCode}");
+      }
     } catch (e) {
-      setState(() {
-        status = "Connection failed";
-      });
-
-      print(e);
+      setState(() => status = "Gagal terhubung: Pastikan satu Wi-Fi & IP benar");
+      print("Error fetchStorage: $e");
+    } finally {
+      setState(() => isLoading = false);
     }
   }
 
+  // 2. Generate Google TTS MP3 (Berjalan lancar di Aplikasi HP)
   Future<File> generateTtsMp3(String text) async {
     final dir = await getTemporaryDirectory();
-
     final mp3File = File("${dir.path}/tts.mp3");
 
-    final url =
-        "https://translate.google.com/translate_tts"
+    final url = "https://translate.google.com/translate_tts"
         "?ie=UTF-8"
         "&client=tw-ob"
         "&tl=id"
@@ -84,151 +100,202 @@ class _SettingsPageState extends State<SettingsPage> {
     final response = await http.get(
       Uri.parse(url),
       headers: {
+        // Di aplikasi HP, header User-Agent ini diizinkan oleh Google
         "User-Agent":
-            "Mozilla/5.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
       },
     );
 
     if (response.statusCode != 200) {
-      throw Exception(
-        "TTS failed: ${response.statusCode}",
-      );
+      throw Exception("Gagal TTS (${response.statusCode})");
     }
 
-    await mp3File.writeAsBytes(
-      response.bodyBytes,
-    );
-
-    print(
-      "MP3 size: ${await mp3File.length()} bytes",
-    );
-
+    await mp3File.writeAsBytes(response.bodyBytes);
     return mp3File;
   }
 
+  // 3. Generate Suara dan Kirim ke ESP8266
   Future<void> sendText() async {
-    if (socket == null) {
-      print("Socket not connected");
-      return;
-    }
-
     final text = messageController.text.trim();
-
     if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Teks pesan tidak boleh kosong!")),
+      );
       return;
     }
 
-    try {
-      final mp3File = await generateTtsMp3(text);
-
-      final bytes = await mp3File.readAsBytes();
-
-      socket!.write(
-        "AUDIO|reminder.mp3|${bytes.length}\n",
-      );
-
-      socket!.add(bytes);
-
-      await socket!.flush();
-
-      print(
-        "Sent ${bytes.length} bytes",
-      );
-    } catch (e) {
-      print(e);
-    }
-  }
-
-  void disconnect() {
-    socket?.destroy();
-    socket = null;
+    await _saveSettings();
 
     setState(() {
-      status = "Disconnected";
+      isLoading = true;
+      status = "Sedang generate TTS MP3...";
     });
+
+    try {
+      // Step A: Buat MP3 dari Google TTS
+      final mp3File = await generateTtsMp3(text);
+      final bytes = await mp3File.readAsBytes();
+
+      setState(() => status = "Mengirim audio (${bytes.length} bytes)...");
+
+      // Step B: Upload file MP3 ke ESP8266
+      final response = await http.post(
+        Uri.parse("$baseUrl/upload-audio"),
+        headers: {"Content-Type": "application/octet-stream"},
+        body: bytes,
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        setState(() => status = "Audio Berhasil Terkirim & Dimainkan!");
+        messageController.clear();
+        await fetchStorageInfo(); // Update status storage LittleFS
+      } else {
+        setState(() => status = "Upload gagal: Status ${response.statusCode}");
+      }
+    } catch (e) {
+      setState(() => status = "Error: $e");
+      print("Error sendText: $e");
+    } finally {
+      setState(() => isLoading = false);
+    }
   }
 
   @override
   void dispose() {
-    disconnect();
-
     ipController.dispose();
     portController.dispose();
     messageController.dispose();
-
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final progress = totalBytes > 0 ? (usedBytes / totalBytes) : 0.0;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Settings"),
+        title: const Text("Settings ESP8266"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: isLoading ? null : fetchStorageInfo,
+            tooltip: "Refresh Status",
+          )
+        ],
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
-              controller: ipController,
-              decoration: const InputDecoration(
-                labelText: "ESP IP Address",
-              ),
-            ),
-
-            TextField(
-              controller: portController,
-              decoration: const InputDecoration(
-                labelText: "Port",
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            Text(
-              "Status: $status",
-            ),
-
-            const SizedBox(height: 20),
-
-            ElevatedButton(
-              onPressed: connect,
-              child: const Text("Connect"),
-            ),
-
-            ElevatedButton(
-              onPressed: disconnect,
-              child: const Text("Disconnect"),
-            ),
-
-            const Divider(),
-
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text("Storage Wemos"),
-                LinearProgressIndicator(
-                  value: usedBytes / totalBytes,
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: ipController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: "IP Address ESP",
+                        hintText: "Misal: 192.168.43.100",
+                        prefixIcon: Icon(Icons.wifi),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: portController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: "Port",
+                        hintText: "80",
+                        prefixIcon: Icon(Icons.numbers),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      onPressed: isLoading ? null : fetchStorageInfo,
+                      icon: const Icon(Icons.link),
+                      label: const Text("Tes Koneksi & Storage"),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                    "${(usedBytes / 1024).toStringAsFixed(1)} KB / "
-                    "${(totalBytes / 1024).toStringAsFixed(1)} KB"),
-                Text(
-                    "Free: ${((totalBytes - usedBytes) / 1024).toStringAsFixed(1)} KB"),
-              ],
-            ),
-
-            TextField(
-              controller: messageController,
-              decoration: const InputDecoration(
-                labelText: "Message",
               ),
             ),
-
-            ElevatedButton(
-              onPressed: sendText,
-              child: const Text("Generate TTS"),
+            const SizedBox(height: 16),
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "Status: $status",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: status.contains("Terhubung") || status.contains("Berhasil")
+                            ? Colors.green
+                            : (status.contains("Gagal") || status.contains("Error")
+                                ? Colors.red
+                                : Colors.blueGrey),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text("Kapasitas LittleFS ESP8266:", style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(value: progress.clamp(0.0, 1.0)),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text("Terpakai: ${(usedBytes / 1024).toStringAsFixed(1)} KB"),
+                        Text("Total: ${(totalBytes / 1024).toStringAsFixed(1)} KB"),
+                      ],
+                    ),
+                    Text(
+                      "Sisa: ${((totalBytes - usedBytes) / 1024).toStringAsFixed(1)} KB",
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: messageController,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                        labelText: "Pesan Text-to-Speech",
+                        hintText: "Ketik pesan pengingat...",
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        onPressed: isLoading ? null : sendText,
+                        icon: const Icon(Icons.record_voice_over),
+                        label: const Text("Generate TTS & Kirim"),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),

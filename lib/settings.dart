@@ -116,7 +116,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   // 3. Generate Suara dan Kirim ke ESP8266
-  Future<void> sendText() async {
+Future<void> sendText() async {
     final text = messageController.text.trim();
     if (text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -133,25 +133,35 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      // Step A: Buat MP3 dari Google TTS
+      // 1. Dapatkan file MP3 dari TTS
       final mp3File = await generateTtsMp3(text);
-      final bytes = await mp3File.readAsBytes();
+      final fileSize = await mp3File.length();
 
-      setState(() => status = "Mengirim audio (${bytes.length} bytes)...");
+      setState(() => status = "Mengirim audio ($fileSize bytes)...");
 
-      // Step B: Upload file MP3 ke ESP8266
-      final response = await http.post(
+      // 2. Kirim via MultipartRequest (Streaming upload)
+      final request = http.MultipartRequest(
+        'POST',
         Uri.parse("$baseUrl/upload-audio"),
-        headers: {"Content-Type": "application/octet-stream"},
-        body: bytes,
-      ).timeout(const Duration(seconds: 10));
+      );
+
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          mp3File.path,
+          filename: 'reminder.mp3',
+        ),
+      );
+
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 15));
+      final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
         setState(() => status = "Audio Berhasil Terkirim & Dimainkan!");
         messageController.clear();
-        await fetchStorageInfo(); // Update status storage LittleFS
+        await fetchStorageInfo();
       } else {
-        setState(() => status = "Upload gagal: Status ${response.statusCode}");
+        setState(() => status = "Gagal kirim: Status ${response.statusCode}");
       }
     } catch (e) {
       setState(() => status = "Error: $e");

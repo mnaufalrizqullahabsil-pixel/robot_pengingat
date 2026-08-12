@@ -17,7 +17,6 @@ class _AlarmListPageState extends State<AlarmListPage> {
   String _status = 'Disconnected';
   int _totalBytes = 1;
   int _usedBytes = 0;
-  bool _isRefreshing = false;
 
   @override
   void initState() {
@@ -33,7 +32,6 @@ class _AlarmListPageState extends State<AlarmListPage> {
     _tcp.alarmsStream.listen((list) {
       if (mounted) setState(() {
         _alarms = list;
-        _isRefreshing = false;
       });
     });
     _tcp.storageStream.listen((m) {
@@ -45,11 +43,8 @@ class _AlarmListPageState extends State<AlarmListPage> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _isRefreshing = true);
     _tcp.requestAlarmList();
-    // jika tidak ada respons dalam 3 detik, hentikan loading
     await Future.delayed(const Duration(seconds: 3));
-    if (mounted) setState(() => _isRefreshing = false);
   }
 
   Future<void> _deleteAlarm(Alarm alarm) async {
@@ -297,7 +292,7 @@ class _AlarmCard extends StatelessWidget {
         gradient: LinearGradient(
           colors: [
             const Color(0xFF1C2333),
-            const Color(0xFF1C2333).withOpacity(0.8),
+            const Color(0xFF1C2333).withValues(alpha: 0.8),
           ],
         ),
         borderRadius: BorderRadius.circular(16),
@@ -342,9 +337,9 @@ class _AlarmCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                     decoration: BoxDecoration(
-                      color: badgeColor.withOpacity(0.15),
+                      color: badgeColor.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: badgeColor.withOpacity(0.4)),
+                      border: Border.all(color: badgeColor.withValues(alpha: 0.4)),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,

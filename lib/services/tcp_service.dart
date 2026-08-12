@@ -84,6 +84,12 @@ class TcpService {
     }
   }
 
+  void _completeErrorSafely(Completer<void>? completer, Object error) {
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(error);
+    }
+  }
+
   // ── Terima data dari ESP ────────────────────────────────────────────────────
   void _onData(List<int> data) {
     _buffer += String.fromCharCodes(data);
@@ -98,6 +104,11 @@ class TcpService {
   void _processLine(String line) {
     if (line == 'READY_TO_RECEIVE') {
       _completeSafely(_readyCompleter);
+    } else if (line.startsWith('ERROR_')) {
+      final exception = Exception('ESP Error: ${line.substring(6)}');
+      _completeErrorSafely(_readyCompleter, exception);
+      _completeErrorSafely(_storageCompleter, exception);
+      _completeErrorSafely(_alarmCompleter, exception);
     } else if (line.startsWith('STORAGE|')) {
       final parts = line.split('|');
       if (parts.length >= 3) {
@@ -160,9 +171,9 @@ class TcpService {
       onTimeout: () => throw Exception('ESP tidak merespon perintah kirim audio'),
     );
 
-    // 3. Kirim data byte audio dalam bentuk chunk (masing-masing 2KB)
+    // 3. Kirim data byte audio dalam bentuk chunk (masing-masing 1KB)
     int offset = 0;
-    const chunkSize = 2048;
+    const chunkSize = 1024;
 
     while (offset < bytes.length) {
       int end = offset + chunkSize;

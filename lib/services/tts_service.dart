@@ -11,18 +11,25 @@ class TtsService {
     final mp3File = File('${dir.path}/tts_preview.mp3');
 
     final url = Uri.parse(
-      'https://api.streamelements.com/kappa/v2/speech'
-      '?voice=Gisela'
-      '&text=${Uri.encodeComponent(text)}',
+      'https://translate.google.com/translate_tts'
+      '?ie=UTF-8'
+      '&tl=id'
+      '&client=tw-ob'
+      '&q=${Uri.encodeComponent(text)}',
     );
 
-    final response = await http.get(url).timeout(
+    final response = await http.get(
+      url,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+      },
+    ).timeout(
       const Duration(seconds: 15),
       onTimeout: () => throw Exception('TTS timeout — cek koneksi internet'),
     );
 
     if (response.statusCode != 200) {
-      throw Exception('TTS API gagal: HTTP ${response.statusCode}');
+      throw Exception('TTS API gagal: HTTP ${response.statusCode} (Coba kurangi panjang teks)');
     }
 
     if (response.bodyBytes.isEmpty) {

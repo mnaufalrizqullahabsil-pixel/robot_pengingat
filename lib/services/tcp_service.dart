@@ -74,6 +74,16 @@ class TcpService {
     _statusCtrl.add(s);
   }
 
+  Completer<void>? _readyCompleter;
+  Completer<void>? _storageCompleter;
+  Completer<void>? _alarmCompleter;
+
+  void _completeSafely(Completer<void>? completer) {
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
+  }
+
   // ── Terima data dari ESP ────────────────────────────────────────────────────
   void _onData(List<int> data) {
     _buffer += String.fromCharCodes(data);
@@ -86,15 +96,19 @@ class TcpService {
   }
 
   void _processLine(String line) {
-    if (line.startsWith('STORAGE|')) {
+    if (line == 'READY_TO_RECEIVE') {
+      _completeSafely(_readyCompleter);
+    } else if (line.startsWith('STORAGE|')) {
       final parts = line.split('|');
       if (parts.length >= 3) {
         totalBytes = int.tryParse(parts[1]) ?? 1;
         usedBytes  = int.tryParse(parts[2]) ?? 0;
         _storageCtrl.add({'total': totalBytes, 'used': usedBytes});
       }
+      _completeSafely(_storageCompleter);
     } else if (line.startsWith('ALARMS|')) {
       _parseAlarmList(line);
+      _completeSafely(_alarmCompleter);
     }
   }
 
@@ -134,9 +148,50 @@ class TcpService {
 
   Future<void> sendAudio(String filename, List<int> bytes) async {
     if (_socket == null) return;
+
+    // 1. Kirim Header Informasi Audio
+    _readyCompleter = Completer<void>();
     _socket!.write('AUDIO|$filename|${bytes.length}\n');
-    _socket!.add(bytes);
     await _socket!.flush();
+
+    // 2. Tunggu ESP mengirimkan sinyal siap pertama (READY_TO_RECEIVE)
+    await _readyCompleter!.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => throw Exception('ESP tidak merespon perintah kirim audio'),
+    );
+
+    // 3. Kirim data byte audio dalam bentuk chunk (masing-masing 2KB)
+    int offset = 0;
+    const chunkSize = 2048;
+
+    while (offset < bytes.length) {
+      int end = offset + chunkSize;
+      if (end > bytes.length) end = bytes.length;
+      final chunk = bytes.sublist(offset, end);
+
+      _readyCompleter = Completer<void>(); // Re-init completer untuk chunk berikutnya
+      _socket!.add(chunk);
+      await _socket!.flush();
+
+      // Tunggu konfirmasi READY_TO_RECEIVE dari ESP untuk chunk ini
+      await _readyCompleter!.future.timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => throw Exception('Timeout saat mengirim audio chunk pada offset $offset'),
+      );
+
+      offset = end;
+    }
+
+    // 4. Kirim sinyal bahwa seluruh biner audio selesai dikirim
+    _storageCompleter = Completer<void>();
+    _socket!.write('AUDIO_COMPLETE\n');
+    await _socket!.flush();
+
+    // 5. Tunggu ESP selesai menulis file ke flash memory (STORAGE|...)
+    await _storageCompleter!.future.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () => throw Exception('Timeout saat menulis file audio ke robot'),
+    );
   }
 
   Future<void> sendAlarmSchedule({
@@ -146,8 +201,16 @@ class TcpService {
     required String timespec,
   }) async {
     if (_socket == null) return;
+
+    // Kirim jadwal alarm dan tunggu konfirmasi penambahan dari ESP (list alarm baru)
+    _alarmCompleter = Completer<void>();
     _socket!.write('ALARM|$filename|$label|$type|$timespec\n');
     await _socket!.flush();
+
+    await _alarmCompleter!.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => throw Exception('Timeout saat menyimpan jadwal alarm di robot'),
+    );
   }
 
   Future<void> deleteAlarm(String filename) async {

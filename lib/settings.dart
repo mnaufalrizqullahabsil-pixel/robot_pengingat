@@ -103,32 +103,24 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   // Generate Google TTS MP3
-  Future<File> generateTtsMp3(String text) async {
-    final dir = await getTemporaryDirectory();
-    final mp3File = File("${dir.path}/tts.mp3");
+ Future<File> generateTtsMp3(String text) async {
+  final dir = await getTemporaryDirectory();
+  final mp3File = File("${dir.path}/tts.mp3");
 
-    final url = "https://translate.google.com/translate_tts"
-        "?ie=UTF-8"
-        "&client=tw-ob"
-        "&tl=id"
-        "&q=${Uri.encodeComponent(text)}";
+  // Menggunakan suara Bahasa Indonesia (Gisela / Putri / dll)
+  final url = "https://api.streamelements.com/kappa/v2/speech"
+      "?voice=Gisela"
+      "&text=${Uri.encodeComponent(text)}";
 
-    final response = await http.get(
-      Uri.parse(url),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    );
+  final response = await http.get(Uri.parse(url));
 
-    if (response.statusCode != 200) {
-      throw Exception("TTS failed: ${response.statusCode}");
-    }
-
-    await mp3File.writeAsBytes(response.bodyBytes);
-    print("MP3 size: ${await mp3File.length()} bytes");
-    return mp3File;
+  if (response.statusCode != 200) {
+    throw Exception("TTS failed: ${response.statusCode}");
   }
 
+  await mp3File.writeAsBytes(response.bodyBytes);
+  return mp3File;
+}
   // Kirim Audio & Format Header TCP Socket
   Future<void> sendText() async {
     if (socket == null) {
